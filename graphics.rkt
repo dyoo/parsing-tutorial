@@ -1,10 +1,8 @@
 #lang racket
 
 (require parser-tools/lex
-         (prefix-in : parser-tools/lex-sre)
          parser-tools/yacc
-         racket/match
-         racket/generator)
+         rackunit)
 
 ;; We'd like to parse lines of the form:
 ;;
@@ -36,109 +34,57 @@
 ;;
 ;; which are all functions that take a single "value" argument.
 
-
 ;; Let's see how to tokenize an input stream.  We use the tools
 ;; provided by the parser-tools/lex and parser-tools/lex-sre libraries.
 
 
-;; tokenize/1: input-port -> token
+;; tokenize-graphics/1: input-port -> token
 ;; Tokenizes a single token from an input port.
-(define tokenize/1
+(define tokenize-graphics/1
   (lexer 
    ["line" (token-LINE lexeme)]
    ["from" (token-FROM lexeme)]
    ["to" (token-TO lexeme)]
    ["," (token-COMMA lexeme)]
-   [(:+ numeric)
+   [(repetition 1 +inf.0 numeric)
     (token-INT (string->number lexeme 10))]
    [whitespace
-    ;; just skip whitespace and continue.
-    (tokenize/1 input-port)]
+    ;; Skip whitespace and continue.
+    (tokenize-graphics/1 input-port)]
    [(eof) (token-EOF eof)]))
    
+
 ;; We get a function that consumes an input port, and produces a single
 ;; token.
 ;;
 ;; This doesn't automatically fit the parser, which expects a function that
-;; can be called multiple times to get tokens.  But we can construct the expected
-;; input pretty easily.
-(define (make-token-stream ip)
+;; can be called multiple times to get tokens.
+;;
+;; But we can construct the expected input pretty easily.
+
+;; token-generate: input-port (input-port -> token) -> (-> token)
+(define (token-generate tokenize/1 ip)
   (define (f)
     (tokenize/1 ip))
   f)
 
+
 ;; Let's try it out.
-(define sample-token-thunk (make-token-stream 
-                            (open-input-string "line from 0,0 to 0,10")))
-(sample-token-thunk)
-(sample-token-thunk)
-(sample-token-thunk)
-(sample-token-thunk)
-(sample-token-thunk)
-(sample-token-thunk)
-(sample-token-thunk)
-(sample-token-thunk)
-(sample-token-thunk) ;; should match 10
-(sample-token-thunk) ;; should be eof
-(sample-token-thunk) ;; should be eof
-
-
-
-
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Aside: we can test the parser independently of the lexer.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-;; Since the token constructors are available,
-;; we can test our parser independently of a dedicated lexer.
-;; Here's a quick-and-dirty approach that uses s-expressions as
-;; an input, and produces a lexer.
-
-;; Treat the following sexp->tokens function as magic at the moment: we'll
-;; replace this with a real lexer that doesn't use s-expressions as an
-;; intermediate format, in a moment.
-
-;; sexp->tokens: sexp -> (listof token)
-(define (sexp->tokens sexp)
-  (define (dispatch x acc)
-    (match x
-      ['line (cons (token-LINE "line") acc)]
-      ['from (cons (token-FROM "from") acc)]
-      ['to (cons (token-TO "to") acc)]
-      [(list 'unquote elt) (dispatch elt (cons (token-COMMA ",") acc))]
-      [(? number?) (cons (token-INT x) acc)]))
-  (reverse (foldl dispatch (list) sexp)))
-
-;; Now for our sample data:
-(define sample-tokens
-  (sexp->tokens '(line from 0,0 to 0,10
-                  line from 0,10 to 10,10
-                  line from 10,10 to 10,0
-                  line from 10,0 to 0,0)))
-;; Parsers and lexers typically don't consume the whole file at once: rather, they do it by
-;; demand.  This design means that the parser won't accept lists of tokens as inputs, but
-;; instead it will use a function that it calls to pull elements on demand.
-
-
-;; We can use sequence->generator to get us such a function.
-;; tokens-thunk: (listof token) -> (-> token)
-(define (tokens->thunk tokens)
-  (sequence->generator 
-   (sequence-append tokens 
-                    (forever-sequence (token-EOF eof)))))
-
-
-;; helper: given v, produces a sequence with nothing but v.
-(define (forever-sequence v)
-  (in-cycle (list v)))
-
-;; sample-tokens-thunk: -> token
-(define sample-tokens-thunk
-  (tokens->thunk sample-tokens))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
+(define sample-token-thunk 
+  (token-generate tokenize-graphics/1
+                  (open-input-string "line from 0,42")))
+(check-equal? (sample-token-thunk)
+              (token-LINE "line"))
+(check-equal? (sample-token-thunk)
+              (token-FROM "from"))
+(check-equal? (sample-token-thunk)
+              (token-INT 0))
+(check-equal? (sample-token-thunk)
+              (token-COMMA ","))
+(check-equal? (sample-token-thunk)
+              (token-INT 42))
+(check-equal? (sample-token-thunk)
+              (token-EOF eof))
 
 
 
@@ -151,16 +97,16 @@
    ;; We declare the terminal elements of our grammar to be
    ;; the tokens defined by graphics-tokens.
    (tokens graphics-tokens)
-   
-   (error 
-    (lambda (tok-ok? tok-name tok-val start-pos end-pos)
-      (error 'parser)))
-   
-   (end EOF)
+      
+   ;; The parser will try to match the rule for 'file'.
    (start file)
    
-   ;; Along with the terminals, we have to describe how
-   ;; the non-terminal rules work.
+   ;; ... and the parser succeeds when a parse for 'file' ends
+   ;; with the EOF token:
+   (end EOF)
+   
+   
+   ;; We have to describe how the non-terminal rules work.
    (grammar 
     
     ;; Each rule describes a shape, as well as an action to
@@ -184,19 +130,25 @@
             ;; The "value" of a terminal is its token-value.
             ;; So when we refer to the INT components here via $1 and $3,
             ;; we get their values.
-            (point $1 $3)]])))
+            (point $1 $3)]])
+
+   
+   ;; Finally, we should tell the parser how to report errors as they occur.
+   (error 
+    (lambda (tok-ok? tok-name tok-value)
+      (error 'parse-graphics)))))
   
 
-;; At this point, we can call parse-graphics on our sample-tokens-thunk, and get back four lines.
+;; At this point, we can call parse-graphics on a generator of tokens,
+;; and get back a list of commands.
 (define parsed-lines
-  (parse-graphics sample-tokens-thunk))
-
-
-(define another-parsed-lines
   (parse-graphics 
-   (make-token-stream 
-    (open-input-string
-     "line from 0,0 to 0,10
-      line from 0,10 to 10,10
-      line from 10,10 to 10,0
-      line from 10,0 to 0,0"))))
+   (token-generate tokenize-graphics/1
+                   (open-input-string
+                    #<<EOF
+line from 0,0 to 0,10
+line from 0,10 to 10,10
+line from 10,10 to 10,0
+line from 10,0 to 0,0
+EOF
+))))
