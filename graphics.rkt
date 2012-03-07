@@ -60,7 +60,7 @@
 ;; This doesn't automatically fit the parser, which expects a function that
 ;; can be called multiple times to get tokens.
 ;;
-;; But we can construct the expected input pretty easily.
+;; But we can construct the expected input to the parser like this:
 
 ;; token-generate: input-port (input-port -> token) -> (-> token)
 (define (token-generate tokenize/1 ip)
@@ -88,7 +88,7 @@
 
 
 
-;; Now that we can create a source of tokens at will,
+;; Now that we can create a source of tokens,
 ;; let's get to the parser part of things.
 
 ;; parse-graphics: (-> token) -> (listof line)
@@ -112,24 +112,31 @@
     ;; Each rule describes a shape, as well as an action to
     ;; perform when it recognizes a shape.
     [file [(command+) 
+           ;; A file is a nonempty sequence of commands,
+           ;; which, when we parse, we'll return as a list.
            $1]]
     
-    ;; For example, when the parser recognizes a command followed
+    ;; When the parser recognizes a command followed
     ;; immediately by another bunch of commands, we can collect
     ;; them together into a single command list:
     [command+ [(command command+) 
                (cons $1 $2)]
               
-              [() 
-               (list)]]
+              [(command) 
+               (list $1)]]
     
     [command [(LINE FROM point TO point)
+              ;; Note that we can pick out the value we care about
+              ;; when we get a successful parse.  Here, we only
+              ;; care about the two points, which we use to construct
+              ;; a line.
               (line $3 $5)]]
     
     [point [(INT COMMA INT)
             ;; The "value" of a terminal is its token-value.
             ;; So when we refer to the INT components here via $1 and $3,
-            ;; we get their values.
+            ;; we get their integer values, since we did that processing
+            ;; with our lexer.
             (point $1 $3)]])
 
    
